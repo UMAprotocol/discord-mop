@@ -158,7 +158,7 @@ async function main() {
     if (DELETE) {
         console.log("DELETE env specified, this script will delete messages on the discord server!");
     } else {
-        console.log("DELETE env specified, this script will perform a dry-run.");
+        console.log("DELETE env not specified, this script will perform a dry-run.");
     }
 
     console.log("Requesting Channels...");
