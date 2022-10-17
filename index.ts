@@ -1,4 +1,4 @@
-import _axios, { Axios, AxiosResponseHeaders, RawAxiosRequestHeaders } from "axios";
+import _axios, { Axios, AxiosResponse, AxiosResponseHeaders, RawAxiosRequestHeaders } from "axios";
 import dotenv from "dotenv";
 import bluebird from "bluebird";
 
@@ -69,53 +69,60 @@ function recordLocalRateLimit(headers: RawAxiosRequestHeaders | AxiosResponseHea
     return rateLimitBucket;
 }
 
-async function getAllMessagesInChannel(channelId: string) {
-    const messages: Message[] = [];
-    let before: undefined | string = undefined;
-    let rateLimitId: undefined | string = undefined;
-    for (;;) {
+function getRateLimitDelay(bucket: string | undefined): number {
+    const currentTs = Date.now() / 1000;
+    if (bucket !== undefined && rateLimitCache[bucket] !== undefined && currentTs < rateLimitCache[bucket]) {
+        return rateLimitCache[bucket] - currentTs;
+    }
 
-        const currentTs = Date.now() / 1000;
-        if (rateLimitId !== undefined && rateLimitCache[rateLimitId] !== undefined && currentTs < rateLimitCache[rateLimitId]) {
-            await delay(rateLimitCache[rateLimitId] - currentTs);
-            // After the delay, we should do this check again, so repeat the loop.
-            continue;
-        }
+    if (rateLimitCache["global"] !== undefined && currentTs < rateLimitCache["global"]) {
+        return rateLimitCache["global"] - currentTs;
+    }
 
-        if (rateLimitCache["global"] !== undefined && currentTs < rateLimitCache["global"]) {
-            await delay(rateLimitCache["global"] - currentTs);
-            continue;
-        }
+    return 0;
+}
 
-        const { data, status, headers } = await axios.get(`/channels/${channelId}/messages?limit=100${before ? `&before=${before}` : ""}`);
+function checkResponse(response: AxiosResponse, expectedStatus: number): { needsRetry: boolean; detectedBucket: string | undefined } {
+    const { status, data, headers } = response;
 
-        // Permission denied and no messages yet found.
-        if ((status === 401 || status === 403) && messages.length === 0) {
-            console.log(`Got error when trying to retrieve messages. Status: ${status}, ${data}`);
-            return messages;
-        }
-
-        if (status === 429) {
+    switch (status) {
+        case 429:
             const rateLimitResponse = JSON.parse(data) as RateLimitResponse;
-
             console.log(`Rate limited. Setting reset times and retrying.`);
-
             if (rateLimitResponse.global) {
                 // Global rate limit.
                 console.log(`Rate limit is global. Retrying after ${rateLimitResponse.retry_after / 1000} seconds.`);
                 rateLimitCache["global"] = (Date.now() + rateLimitResponse.retry_after) / 1000;
+                return { needsRetry: true, detectedBucket: undefined }; // No bucket can be detected for global rate limits.
             } else {
-                rateLimitId = recordLocalRateLimit(headers);
+                return { needsRetry: true, detectedBucket: recordLocalRateLimit(headers) };
             }
+        case expectedStatus:
+            return { needsRetry: false, detectedBucket: recordLocalRateLimit(headers) };
+        default:
+            throw new Error(`Received unexpected status ${status} ${data} ${headers}`);
+    }
+}
+
+async function getAllMessagesInChannel(channelId: string) {
+    const messages: Message[] = [];
+    let before: undefined | string = undefined;
+    let rateLimitBucket: undefined | string = undefined;
+    for (;;) {
+
+        const rateLimitDelay = getRateLimitDelay(rateLimitBucket);
+        if (rateLimitDelay > 0) {
+            await delay(rateLimitDelay);
             continue;
         }
 
-        rateLimitId = recordLocalRateLimit(headers);
-        
-        // Request failed for some other reason.
-        if (status !== 200) throw new Error(`getAllMessagesInChannel(${channelId}) request failed with status ${status} ${data}`);
+        const response = await axios.get(`/channels/${channelId}/messages?limit=100${before ? `&before=${before}` : ""}`);
 
-        const newMessages: Message[] = (JSON.parse(data) as Omit<Message, "date">[]).map((data) => ({ ...data, date: new Date(data.timestamp) })).sort((a, b) => a.date.valueOf() - b.date.valueOf());
+        const { needsRetry, detectedBucket } = checkResponse(response, 200);
+        if (detectedBucket) rateLimitBucket = detectedBucket;
+        if (needsRetry) continue;
+
+        const newMessages: Message[] = (JSON.parse(response.data) as Omit<Message, "date">[]).map((data) => ({ ...data, date: new Date(data.timestamp) })).sort((a, b) => a.date.valueOf() - b.date.valueOf());
 
         if (newMessages.length === 0) return messages;
 
@@ -125,36 +132,23 @@ async function getAllMessagesInChannel(channelId: string) {
     }
 }
 
-let rateLimitBucket: string | undefined = undefined;
+let deleteRateLimitBucket: string | undefined = undefined;
 
 async function deleteMessage(message: Message) {
     for (;;) {
-        const currentTs = Date.now() / 1000;
-        if (rateLimitCache["global"] !== undefined && currentTs < rateLimitCache["global"]) {
-            await delay(rateLimitCache["global"] - currentTs);
+        const rateLimitDelay = getRateLimitDelay(deleteRateLimitBucket);
+
+        if (rateLimitDelay > 0) {
+            await delay(rateLimitDelay);
             continue;
         }
 
-        if (rateLimitBucket !== undefined && rateLimitCache[rateLimitBucket] !== undefined && currentTs < rateLimitCache[rateLimitBucket]) {
-            await delay(rateLimitCache[rateLimitBucket] - currentTs);
-            // After the delay, we should do this check again, so repeat the loop.
-            continue;
-        }
-        const { status, headers, data } = await axios.delete(`/channels/${message.channel_id}/messages/${message.id}`);
+        const response = await axios.delete(`/channels/${message.channel_id}/messages/${message.id}`);
 
-        if (status === 429 && JSON.parse(data).global === true) {
-            const rateLimitResponse = JSON.parse(data) as RateLimitResponse;
-            // Global rate limit.
-            console.log(`Rate limit is global. Retrying after ${rateLimitResponse.retry_after / 1000} seconds.`);
-            rateLimitCache["global"] = (Date.now() + rateLimitResponse.retry_after) / 1000;
-            continue;
-        }
-
-        if (status !== 204 && status !== 429) throw new Error(`Unrecognized Error ${status} ${headers} ${data}`);
-
-        rateLimitBucket = recordLocalRateLimit(headers);
-
-        if (status === 204) return;
+        const { needsRetry, detectedBucket } = checkResponse(response, 204);
+        
+        if (detectedBucket) deleteRateLimitBucket = detectedBucket;
+        if (needsRetry) continue;
     }
 }
 
