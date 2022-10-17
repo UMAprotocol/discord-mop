@@ -13,7 +13,7 @@ const axios = new _axios.Axios({
     }
 })
 
-const { CLIENT_ID, GUILD_ID, DEBUG, RETENTION_SECONDS, NAME_FILTER } = process.env;
+const { GUILD_ID, RETENTION_SECONDS, NAME_FILTER, ID_FILTER, DELETE } = process.env;
 
 type Channel = {
     id: string;
@@ -31,13 +31,6 @@ type RateLimitResponse = {
     global: boolean;
     message: string;
     retry_after: number;
-}
-
-type RateLimit = {
-    resetTime: number;
-    limit: number;
-    remaining: number;
-    period: number;
 }
 
 const rateLimitCache: { [id: string]: number } = {};
@@ -161,12 +154,26 @@ async function deleteMessage(message: Message) {
 
 
 async function main() {
+
+    if (DELETE) {
+        console.log("DELETE env specified, this script will delete messages on the discord server!");
+    } else {
+        console.log("DELETE env specified, this script will perform a dry-run.");
+    }
+
     console.log("Requesting Channels...");
     let channels = await getChannels();
     if (NAME_FILTER) {
         console.log(`Filtering channels to only consider those with ${NAME_FILTER} in their name...`);
         channels = channels.filter(({ name }) => name?.includes(NAME_FILTER));
     }
+
+    if (ID_FILTER) {
+        console.log(`Filtering channels to only consider those with ids in ${ID_FILTER}...`);
+        const ids = ID_FILTER.split(",").map(id => id.trim());
+        channels = channels.filter(({ id }) => ids.includes(id));
+    }
+
     console.log(`Got ${channels.length} channels`);
     console.log("Requesting messages from all channels...");
 
@@ -187,12 +194,13 @@ async function main() {
     const deletedMessages = messages.filter(message => (currentTime - message.date.valueOf()) > (retentionSeconds * 1000));
     const retainedMessages = messages.filter(message => (currentTime - message.date.valueOf()) <= (retentionSeconds * 1000));
     console.log(`Retaining ${retainedMessages.length}, deleting ${deletedMessages.length}.`);
-    if (retainedMessages.length > 0) {
-        console.log(`Oldest retained message: ${JSON.stringify(retainedMessages[0])} on channel ${channelIdMapping[retainedMessages[0].channel_id].name}`);
-    }
 
-    if (deletedMessages.length > 0) {
-        console.log(`Latest deleted message: ${JSON.stringify(deletedMessages[deletedMessages.length - 1])} on channel ${channelIdMapping[deletedMessages[deletedMessages.length - 1].channel_id].name}`);
+    if (retainedMessages.length > 0) console.log(`Oldest retained message: ${JSON.stringify(retainedMessages[0])} on channel ${channelIdMapping[retainedMessages[0].channel_id].name}`);
+    if (deletedMessages.length > 0) console.log(`Latest deleted message: ${JSON.stringify(deletedMessages[deletedMessages.length - 1])} on channel ${channelIdMapping[deletedMessages[deletedMessages.length - 1].channel_id].name}`);
+
+    if (!DELETE) {
+        console.log("DELETE env variable not specified, so returning early.");
+        return;
     }
 
     await bluebird.map(deletedMessages, deleteMessage, { concurrency: 5 });
