@@ -45,6 +45,12 @@ async function getChannels(): Promise<Channel[]> {
     return JSON.parse(data);
 }
 
+async function getActiveThreads(): Promise<Channel[]> {
+    const { data, status } = await axios.get(`/guilds/${GUILD_ID}/threads/active`);
+    if (status !== 200) throw new Error(`getActiveThreads request failed with status ${status} ${data}`);
+    return JSON.parse(data).threads;
+}
+
 function recordLocalRateLimit(headers: RawAxiosRequestHeaders | AxiosResponseHeaders): string {
     if (!headers["x-ratelimit-remaining"]) throw new Error("No x-ratelimit-remaining header found");
     const rateLimitRemaining = Number(headers["x-ratelimit-remaining"]);
@@ -161,8 +167,9 @@ async function main() {
         console.log("DELETE env not specified, this script will perform a dry-run.");
     }
 
-    console.log("Requesting Channels...");
-    let channels = await getChannels();
+    console.log("Requesting Channels and Active Threads...");
+    let channels = [...await getChannels(), ...await getActiveThreads()];
+
     if (NAME_FILTER) {
         console.log(`Filtering channels to only consider those with ${NAME_FILTER} in their name...`);
         channels = channels.filter(({ name }) => name?.includes(NAME_FILTER));
