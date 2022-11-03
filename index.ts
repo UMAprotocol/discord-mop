@@ -146,9 +146,10 @@ async function deleteMessage(message: Message) {
         const response = await axios.delete(`/channels/${message.channel_id}/messages/${message.id}`);
 
         const { needsRetry, detectedBucket } = checkResponse(response, 204);
-        
+
         if (detectedBucket) deleteRateLimitBucket = detectedBucket;
         if (needsRetry) continue;
+        break;
     }
 }
 
