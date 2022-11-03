@@ -213,7 +213,7 @@ async function main() {
         return;
     }
 
-    await bluebird.map(deletedMessages, deleteMessage, { concurrency: 1 });
+    for (const message of deletedMessages) await deleteMessage(message);
 }
 
 main();
