@@ -13,7 +13,7 @@ const axios = new _axios.Axios({
     }
 })
 
-const { GUILD_ID, RETENTION_SECONDS, NAME_FILTER, ID_FILTER, DELETE } = process.env;
+const { GUILD_ID, RETENTION_SECONDS, NAME_FILTER, ID_FILTER, DELETE, ID_EXCLUDE_FILTER } = process.env;
 
 type Channel = {
     id: string;
@@ -176,6 +176,12 @@ async function main() {
         console.log(`Filtering channels to only consider those with ids in ${ID_FILTER}...`);
         const ids = ID_FILTER.split(",").map(id => id.trim());
         channels = channels.filter(({ id }) => ids.includes(id));
+    }
+
+    if (ID_EXCLUDE_FILTER) {
+        console.log(`Filtering channels to only remove those with ids in ${ID_EXCLUDE_FILTER}...`);
+        const ids = ID_EXCLUDE_FILTER.split(",").map(id => id.trim());
+        channels = channels.filter(({ id }) => !ids.includes(id));
     }
 
     console.log(`Got ${channels.length} channels`);
