@@ -149,6 +149,8 @@ async function deleteMessage(message: Message) {
 
         if (detectedBucket) deleteRateLimitBucket = detectedBucket;
         if (needsRetry) continue;
+
+        console.log(`Deleted message with id ${message.id} at date: ${message.date.toLocaleString()}`)
         break;
     }
 }
@@ -205,7 +207,7 @@ async function main() {
         return;
     }
 
-    await bluebird.map(deletedMessages, deleteMessage, { concurrency: 5 });
+    await bluebird.map(deletedMessages, deleteMessage, { concurrency: 1 });
 }
 
 main();
