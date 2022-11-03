@@ -1,4 +1,4 @@
-import _axios, { Axios, AxiosResponse, AxiosResponseHeaders, RawAxiosRequestHeaders } from "axios";
+import _axios, { AxiosResponse, AxiosResponseHeaders, RawAxiosRequestHeaders } from "axios";
 import dotenv from "dotenv";
 import bluebird from "bluebird";
 
@@ -15,9 +15,25 @@ const axios = new _axios.Axios({
 
 const { GUILD_ID, RETENTION_SECONDS, NAME_FILTER, ID_FILTER, DELETE, ID_EXCLUDE_FILTER } = process.env;
 
+enum ChannelType {
+    GUILD_TEXT = 0,
+    DM = 1,
+    GUILD_VOICE = 2,
+    GROUP_DM = 3,
+    GUILD_CATEGORY = 4,
+    GUILD_ANNOUNCEMENT = 5,
+    ANNOUNCEMENT_THREAD = 10,
+    PUBLIC_THREAD = 11,
+    PRIVATE_THREAD = 12,
+    GUILD_STAGE_VOICE = 13,
+    GUILD_DIRECTORY = 14,
+    GUILD_FORUM = 15,
+}
+
 type Channel = {
     id: string;
     name?: string;
+    type: ChannelType;
 }
 
 type Message = {
@@ -52,10 +68,12 @@ async function getActiveThreads(): Promise<Channel[]> {
 }
 
 function recordLocalRateLimit(headers: RawAxiosRequestHeaders | AxiosResponseHeaders): string {
-    if (!headers["x-ratelimit-remaining"]) throw new Error("No x-ratelimit-remaining header found");
+    if (!headers["x-ratelimit-remaining"] || !headers["x-ratelimit-bucket"]) {
+        // console.log("WARN: rate limit headers missing");
+        return "none";
+    }
     const rateLimitRemaining = Number(headers["x-ratelimit-remaining"]);
-    const rateLimitBucket = headers["x-ratelimit-bucket"] as string | undefined;
-    if (!rateLimitBucket) throw new Error(`x-ratelimit-bucket undefined.`);
+    const rateLimitBucket = headers["x-ratelimit-bucket"] as string;
 
     if (rateLimitRemaining === 0) {
         const resetRawValue = headers["x-ratelimit-reset"];
@@ -155,6 +173,66 @@ async function deleteMessage(message: Message) {
     }
 }
 
+let archivedThreadsRateLimitBucket: string | undefined = undefined;
+
+type Thread = {
+    id: string,
+    name?: string,
+    type: ChannelType,
+    thread_metadata: {
+        archive_timestamp: string;
+    }
+}
+
+type ArchivedThreadResponse = {
+    threads: Thread[];
+    has_more: boolean;
+}
+
+const publicExclusionList = new Set([ChannelType.GUILD_CATEGORY, ChannelType.GUILD_VOICE, ChannelType.PUBLIC_THREAD, ChannelType.PRIVATE_THREAD, ChannelType.GUILD_STAGE_VOICE]);
+const privateExclusionList = new Set([ChannelType.GUILD_CATEGORY, ChannelType.GUILD_VOICE, ChannelType.PUBLIC_THREAD, ChannelType.PRIVATE_THREAD, ChannelType.GUILD_STAGE_VOICE, ChannelType.GUILD_ANNOUNCEMENT]);
+
+async function getArchivedThreads(channel: Channel, type: "public" | "private"): Promise<Channel[]> {
+    const threads: Channel[] = [];
+
+    if (type === "public" && publicExclusionList.has(channel.type)) return [];
+    else if (type === "private" && privateExclusionList.has(channel.type)) return [];
+
+    let before: undefined | string = undefined;
+    for (;;) {
+
+        const rateLimitDelay = getRateLimitDelay(archivedThreadsRateLimitBucket);
+        if (rateLimitDelay > 0) {
+            await delay(rateLimitDelay);
+            continue;
+        }
+
+        const response = await axios.get(`/channels/${channel.id}/threads/archived/${type}?limit=100&${before ? `&before=${before}` : ""}`);
+
+        if (response.status !== 200) {
+            console.log(type, channel.type, response.data);
+            return [];
+        }
+
+        const { needsRetry, detectedBucket } = checkResponse(response, 200);
+        if (detectedBucket) archivedThreadsRateLimitBucket = detectedBucket;
+        if (needsRetry) continue;
+
+        const responseData: ArchivedThreadResponse  = JSON.parse(response.data);
+
+        threads.push(...responseData.threads);
+
+        if (responseData.has_more) {
+            before = new Date(responseData.threads[responseData.threads.length - 1].thread_metadata.archive_timestamp).toISOString();
+            continue;
+        }
+
+        break;
+    }
+
+    return threads;
+}
+
 
 async function main() {
 
@@ -183,6 +261,12 @@ async function main() {
         const ids = ID_EXCLUDE_FILTER.split(",").map(id => id.trim());
         channels = channels.filter(({ id }) => !ids.includes(id));
     }
+
+    // Get all archived threads from each channel.
+    const threads: Channel[] = [];
+    for (const channel of channels) threads.push(...await getArchivedThreads(channel, "public"));
+    for (const channel of channels) threads.push(...await getArchivedThreads(channel, "private"));
+    channels.push(...threads);
 
     console.log(`Got ${channels.length} channels`);
     console.log("Requesting messages from all channels...");
