@@ -209,11 +209,6 @@ async function getArchivedThreads(channel: Channel, type: "public" | "private"):
 
         const response = await axios.get(`/channels/${channel.id}/threads/archived/${type}?limit=100&${before ? `&before=${before}` : ""}`);
 
-        if (response.status !== 200) {
-            console.log(type, channel.type, response.data);
-            return [];
-        }
-
         const { needsRetry, detectedBucket } = checkResponse(response, 200);
         if (detectedBucket) archivedThreadsRateLimitBucket = detectedBucket;
         if (needsRetry) continue;
