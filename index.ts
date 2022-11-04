@@ -192,8 +192,8 @@ type ArchivedThreadResponse = {
 const publicExclusionList = new Set([ChannelType.GUILD_CATEGORY, ChannelType.GUILD_VOICE, ChannelType.PUBLIC_THREAD, ChannelType.PRIVATE_THREAD, ChannelType.GUILD_STAGE_VOICE]);
 const privateExclusionList = new Set([ChannelType.GUILD_CATEGORY, ChannelType.GUILD_VOICE, ChannelType.PUBLIC_THREAD, ChannelType.PRIVATE_THREAD, ChannelType.GUILD_STAGE_VOICE, ChannelType.GUILD_ANNOUNCEMENT]);
 
-async function getArchivedThreads(channel: Channel, type: "public" | "private"): Promise<Channel[]> {
-    const threads: Channel[] = [];
+async function getArchivedThreads(channel: Channel, type: "public" | "private"): Promise<Thread[]> {
+    const threads: Thread[] = [];
 
     if (type === "public" && publicExclusionList.has(channel.type)) return [];
     else if (type === "private" && privateExclusionList.has(channel.type)) return [];
@@ -225,7 +225,31 @@ async function getArchivedThreads(channel: Channel, type: "public" | "private"):
         break;
     }
 
+    if (threads.length > 0) console.log(channel.name, threads.length)
     return threads;
+}
+
+let deleteThreadRateLimitBucket: string | undefined = undefined;
+
+async function deleteThread(thread: Thread) {
+    for (;;) {
+        const rateLimitDelay = getRateLimitDelay(deleteRateLimitBucket);
+
+        if (rateLimitDelay > 0) {
+            await delay(rateLimitDelay);
+            continue;
+        }
+
+        const response = await axios.delete(`/channels/${thread.id}`);
+
+        const { needsRetry, detectedBucket } = checkResponse(response, 200);
+
+        if (detectedBucket) deleteThreadRateLimitBucket = detectedBucket;
+        if (needsRetry) continue;
+
+        console.log(`Deleted thread with id ${thread.id} and archive date: ${new Date(thread.thread_metadata.archive_timestamp).toLocaleString()}`);
+        break;
+    }
 }
 
 
@@ -258,12 +282,11 @@ async function main() {
     }
 
     // Get all archived threads from each channel.
-    const threads: Channel[] = [];
-    for (const channel of channels) threads.push(...await getArchivedThreads(channel, "public"));
-    for (const channel of channels) threads.push(...await getArchivedThreads(channel, "private"));
-    channels.push(...threads);
+    const archivedThreads: Thread[] = [];
+    for (const channel of channels) archivedThreads.push(...await getArchivedThreads(channel, "public"));
+    for (const channel of channels) archivedThreads.push(...await getArchivedThreads(channel, "private"));
 
-    console.log(`Got ${channels.length} channels`);
+    console.log(`Got ${channels.length} channels and ${archivedThreads.length} archived threads`);
     console.log("Requesting messages from all channels...");
 
     const channelIdMapping = Object.fromEntries(channels.map(channel => [channel.id, channel]));
@@ -282,7 +305,10 @@ async function main() {
     const retentionSeconds = Number(RETENTION_SECONDS);
     const deletedMessages = messages.filter(message => (currentTime - message.date.valueOf()) > (retentionSeconds * 1000));
     const retainedMessages = messages.filter(message => (currentTime - message.date.valueOf()) <= (retentionSeconds * 1000));
-    console.log(`Retaining ${retainedMessages.length}, deleting ${deletedMessages.length}.`);
+    const deletedThreads = archivedThreads.filter(thread => (currentTime - (new Date(thread.thread_metadata.archive_timestamp).valueOf())) > (retentionSeconds * 1000));
+    const retainedThreads = archivedThreads.filter(thread => (currentTime - (new Date(thread.thread_metadata.archive_timestamp).valueOf())) <= (retentionSeconds * 1000));
+    console.log(`Retaining ${retainedMessages.length} messages, deleting ${deletedMessages.length} messages.`);
+    console.log(`Retaining ${retainedThreads.length} threads, deleting ${deletedThreads.length} threads`);
 
     if (retainedMessages.length > 0) console.log(`Oldest retained message: ${JSON.stringify(retainedMessages[0])} on channel ${channelIdMapping[retainedMessages[0].channel_id].name}`);
     if (deletedMessages.length > 0) console.log(`Latest deleted message: ${JSON.stringify(deletedMessages[deletedMessages.length - 1])} on channel ${channelIdMapping[deletedMessages[deletedMessages.length - 1].channel_id].name}`);
@@ -292,6 +318,7 @@ async function main() {
         return;
     }
 
+    for (const thread of deletedThreads) await deleteThread(thread);
     for (const message of deletedMessages) await deleteMessage(message);
 }
 
