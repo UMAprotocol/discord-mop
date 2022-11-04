@@ -190,7 +190,7 @@ type ArchivedThreadResponse = {
 }
 
 const publicExclusionList = new Set([ChannelType.GUILD_CATEGORY, ChannelType.GUILD_VOICE, ChannelType.PUBLIC_THREAD, ChannelType.PRIVATE_THREAD, ChannelType.GUILD_STAGE_VOICE]);
-const privateExclusionList = new Set([ChannelType.GUILD_CATEGORY, ChannelType.GUILD_VOICE, ChannelType.PUBLIC_THREAD, ChannelType.PRIVATE_THREAD, ChannelType.GUILD_STAGE_VOICE, ChannelType.GUILD_ANNOUNCEMENT]);
+const privateExclusionList = new Set([ChannelType.GUILD_CATEGORY, ChannelType.GUILD_VOICE, ChannelType.PUBLIC_THREAD, ChannelType.PRIVATE_THREAD, ChannelType.GUILD_STAGE_VOICE, ChannelType.GUILD_ANNOUNCEMENT, ChannelType.GUILD_FORUM]);
 
 async function getArchivedThreads(channel: Channel, type: "public" | "private"): Promise<Thread[]> {
     const threads: Thread[] = [];
@@ -209,6 +209,9 @@ async function getArchivedThreads(channel: Channel, type: "public" | "private"):
 
         const response = await axios.get(`/channels/${channel.id}/threads/archived/${type}?limit=100&${before ? `&before=${before}` : ""}`);
 
+
+        if (response.status !== 200) console.log(channel.name, channel.id, channel.type, type);
+
         const { needsRetry, detectedBucket } = checkResponse(response, 200);
         if (detectedBucket) archivedThreadsRateLimitBucket = detectedBucket;
         if (needsRetry) continue;
@@ -225,7 +228,6 @@ async function getArchivedThreads(channel: Channel, type: "public" | "private"):
         break;
     }
 
-    if (threads.length > 0) console.log(channel.name, threads.length)
     return threads;
 }
 
