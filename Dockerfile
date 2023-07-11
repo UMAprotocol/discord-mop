@@ -7,7 +7,7 @@ WORKDIR /discord-mop
 COPY . $WORKDIR
 
 RUN npm install pm2 -g && \
-    npm install -g typescript 
+    npm install typescript -g
 
 RUN yarn install && \
     tsc
